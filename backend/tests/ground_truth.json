@@ -1,0 +1,5 @@
+{
+  "split": "evaluation",
+  "description": "Awaiting independent human labels. Add occasions with relevant_product_ids and judged_product_ids. Keep tuning labels in a separate file.",
+  "occasions": []
+}
