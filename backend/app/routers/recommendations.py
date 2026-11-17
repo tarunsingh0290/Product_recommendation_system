@@ -1,13 +1,47 @@
-from fastapi import APIRouter, Request
-from app.schemas.recommendation import RecommendationRequest, RecommendationResponse
-from app.core.exceptions import ServiceError
 
-router = APIRouter()
+from functools import lru_cache
 
-@router.post('/api/recommendations', response_model=RecommendationResponse)
-def recommend(payload: RecommendationRequest, request: Request):
-    if 'top_k' not in payload.model_fields_set:
-        payload.top_k = request.app.state.settings.default_top_k
-    if request.app.state.service is None:
-        raise ServiceError(request.app.state.readiness_error)
-    return request.app.state.service.recommend(payload)
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.schemas.recommendation import (
+    RecommendationRequest,
+    RecommendationResponse
+)
+
+from app.services.recommendation_service import (
+    RecommendationService
+)
+
+
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["Recommendations"]
+)
+
+
+@lru_cache(maxsize=1)
+def get_recommendation_service():
+    return RecommendationService()
+
+
+@router.post(
+    "/recommendations",
+    response_model=RecommendationResponse
+)
+def recommend_gifts(
+    request: RecommendationRequest,
+    service: RecommendationService = Depends(
+        get_recommendation_service
+    )
+):
+    try:
+        return service.recommend(
+            occasion=request.occasion.strip(),
+            top_k=request.top_k
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error)
+        ) from error

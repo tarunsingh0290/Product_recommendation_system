@@ -1,37 +1,32 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from app.utils.text import normalize
-from app.schemas.product import ProductResponse
+
+from pydantic import BaseModel, Field, ConfigDict
+
 
 class RecommendationRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid', strict=True)
-    occasion: str = Field(min_length=2, max_length=100)
-    top_k: int = Field(default=10, ge=1, le=10)
+    occasion: str = Field(
+        min_length=1,
+        max_length=100
+    )
 
-    @field_validator('occasion', mode='before')
-    @classmethod
-    def meaningful(cls, value):
-        if not isinstance(value, str):
-            raise ValueError('Occasion must be a string')
-        value = normalize(value)
-        if len(value) < 2 or sum(c.isalpha() for c in value) < 2:
-            raise ValueError('Describe a meaningful occasion')
-        return value
+    top_k: int = Field(
+        default=10,
+        ge=1,
+        le=10
+    )
 
-class Recommendation(ProductResponse):
+
+class RecommendedProduct(BaseModel):
+    product_id: str
+    name: str
+    price: str
+    mainImage: str | None = None
     similarity_score: float
-    suitability_score: float
-    reason: str
-    suitability_passed: bool = True
+
 
 class RecommendationResponse(BaseModel):
     occasion: str
-    requested_count: int
-    returned_count: int
-    status: str = 'ok'
-    recommendations: list[Recommendation]
-    elapsed_ms: float
-    cached: bool = False
-    llm_calls: int = 0
-    llm_tokens: int = 0
-    warning: str | None = None
-    retry_after_seconds: int | None = None
+    generated_context: str
+    total_recommendations: int
+    validation_attempts: int
+    rejected_product_ids: list[str]
+    recommendations: list[RecommendedProduct]

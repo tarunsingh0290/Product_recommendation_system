@@ -1,119 +1,134 @@
-import logging
-from time import perf_counter
-from app.ai.context_generator import generate_context
-from app.ai.product_validator import validate_products
-from app.ai.embedding_model import encode
-from app.ai.llm_client import usage
-from app.ai.text_processor import query_text
-from app.ai.cosine_retriever import retrieve
-from app.core.config import Settings
-from app.core.exceptions import ServiceError
-from app.schemas.recommendation import Recommendation, RecommendationResponse, RecommendationRequest
-from app.services.cache_service import CacheService
-from app.models.recommendation import RankedProduct
 
-logger = logging.getLogger(__name__)
+from app.ai.context_generator import ContextGenerator
+from app.ai.embedding_service import EmbeddingService
+from app.ai.similarity_search import SimilaritySearchService
+from app.ai.product_validator import ProductValidator
+from app.services.catalog_service import CatalogService
+from app.core.config import settings
+
 
 class RecommendationService:
-    def __init__(self, catalog, index, client, settings=None, encoder=encode):
-        self.catalog, self.index, self.client, self.encoder = catalog, index, client, encoder
-        self.settings = settings or Settings()
-        self.cache = CacheService(ttl=self.settings.cache_ttl_seconds)
-        self.context_cache = CacheService(ttl=self.settings.cache_ttl_seconds)
-        self.validation_cache = CacheService(ttl=self.settings.cache_ttl_seconds)
 
-    def recommend(self, request: RecommendationRequest) -> RecommendationResponse:
-        started = perf_counter()
-        self.catalog.assert_unchanged()
-        if request.top_k > self.settings.max_top_k:
-            raise ServiceError('Requested count exceeds configured maximum.', 422)
-        key = (self.catalog.checksum, request.occasion.casefold(), request.top_k)
-        cached = self.cache.get(key)
-        if cached:
-            cached.cached = True
-            cached.llm_calls = cached.llm_tokens = 0
-            cached.elapsed_ms = round((perf_counter() - started) * 1000, 2)
-            return cached
-        metrics = {'calls': 0, 'tokens': 0}
-        token = usage.set(metrics)
-        try:
-            response = self._recommend(request, started)
-            response.llm_calls, response.llm_tokens = metrics['calls'], metrics['tokens']
-            if response.status != 'partial':
-                self.cache.put(key, response)
-            logger.info('recommendation completed count=%d latency_ms=%.2f calls=%d tokens=%d',
-                        response.returned_count, response.elapsed_ms, metrics['calls'], metrics['tokens'])
-            return response
-        except ServiceError as exc:
-            exc.llm_tokens = metrics['tokens']
-            exc.llm_calls = metrics['calls']
-            logger.warning('recommendation failed status=%d latency_ms=%.2f calls=%d tokens=%d',
-                           exc.status, (perf_counter() - started) * 1000,
-                           metrics['calls'], metrics['tokens'])
-            raise
-        finally:
-            usage.reset(token)
+    def __init__(
+        self,
+        context_generator=None,
+        embedding_service=None,
+        similarity_search=None,
+        catalog_service=None,
+        product_validator=None
+    ):
+        self.context_generator = (
+            context_generator if context_generator is not None
+            else ContextGenerator()
+        )
 
-    def _recommend(self, request: RecommendationRequest, started: float) -> RecommendationResponse:
-        context_key = request.occasion.casefold()
-        context = self.context_cache.get(context_key)
-        if context is None:
-            context = generate_context(self.client, request.occasion)
-            self.context_cache.put(context_key, context)
-        try:
-            query = self.encoder([query_text(context)])[0]
-        except Exception as exc:
-            raise ServiceError('Embedding model unavailable. Check model installation and cache.') from exc
-        # Retrieve the highest cosine matches, then assess them without removing low-suitability
-        # products. This preserves the requested result count and exact similarity ordering.
-        candidates = retrieve(self.index.vectors, query, self.index.ids,
-                              limit=self.settings.candidate_batch_size)
-        products = [self.catalog.products[id] for id, _ in candidates
-                    if self.catalog.products[id].eligible]
-        validation_key = (self.catalog.checksum, context_key, tuple(p.id for p in products))
-        decisions = self.validation_cache.get(validation_key)
-        if decisions is None:
-            decisions = validate_products(self.client, context, products)
-            self.validation_cache.put(validation_key, decisions)
-        similarities = dict(candidates)
-        ranked = []
-        for item in decisions:
-            product = self.catalog.products[item.candidate_id]
-            if not product.eligible:
+        self.embedding_service = (
+            embedding_service if embedding_service is not None
+            else EmbeddingService()
+        )
+
+        self.similarity_search = (
+            similarity_search if similarity_search is not None
+            else SimilaritySearchService()
+        )
+
+        self.catalog_service = (
+            catalog_service if catalog_service is not None
+            else CatalogService()
+        )
+
+        self.product_validator = (
+            product_validator if product_validator is not None
+            else ProductValidator()
+        )
+
+    def recommend(self, occasion: str, top_k: int = 10) -> dict:
+
+        if not 1 <= top_k <= 10:
+            raise ValueError("top_k must be between 1 and 10")
+
+        # Generate gift context
+        context = self.context_generator.generate(occasion)
+
+        # Generate query embedding
+        query_vector = self.embedding_service.embed_query(context)
+
+        # Retrieve ranked candidates
+        ranked = self.similarity_search.search(
+            query_vector,
+            top_k=len(self.similarity_search.product_ids)
+        )
+
+        # Fetch eligible products
+        eligible = {
+            product.id: product
+            for product in self.catalog_service.get_eligible_products()
+        }
+
+        candidates = []
+        seen_ids = set()
+
+        for item in ranked:
+            product_id = item["product_id"]
+
+            if product_id in seen_ids:
                 continue
-            ranked.append(RankedProduct(product=product,
-                similarity_score=similarities[product.id],
-                suitability_score=item.suitability_score, reason=item.reason,
-                suitability_passed=item.suitable and
-                    item.suitability_score >= self.settings.suitability_threshold))
-        ranked = self._deduplicate(ranked)[:request.top_k]
-        self.catalog.assert_unchanged()
-        results = [Recommendation(product_id=item.product.id, name=item.product.name,
-            brand=item.product.brand or None, price=item.product.price,
-            currency=item.product.currency, image_url=item.product.image_url,
-            category=item.product.category or None, similarity_score=item.similarity_score,
-            suitability_score=item.suitability_score, reason=item.reason,
-            suitability_passed=item.suitability_passed) for item in ranked]
-        warnings = []
-        caution_count = sum(not item.suitability_passed for item in results)
-        if caution_count:
-            warnings.append(f'{caution_count} similarity matches did not pass the occasion suitability '
-                            'check. Review the cautions on their cards before choosing a gift.')
-        if len(results) < request.top_k:
-            warnings.append(f'Only {len(results)} eligible catalog products are available; '
-                            'additional products cannot be invented.')
-        return RecommendationResponse(occasion=request.occasion, requested_count=request.top_k,
-            returned_count=len(results), status='ok' if results else 'no_results',
-            recommendations=results, warning=' '.join(warnings) or None,
-            elapsed_ms=round((perf_counter() - started) * 1000, 2))
 
-    def _deduplicate(self, results: list[RankedProduct]) -> list[RankedProduct]:
-        # Cosine descending; stable product ID breaks exact ties. Distinct variants can appear.
-        results.sort(key=lambda item: (-item.similarity_score, item.product.id))
-        seen = set()
-        unique = []
-        for item in results:
-            if item.product.id not in seen:
-                seen.add(item.product.id)
-                unique.append(item)
-        return unique
+            product = eligible.get(product_id)
+
+            if product is None:
+                continue
+
+            seen_ids.add(product_id)
+
+            candidates.append((
+                product,
+                item["similarity_score"]
+            ))
+
+        recommendations = []
+        rejected_ids = []
+
+        cursor = 0
+        attempts = 0
+
+        # Maximum 3 validation batches
+        while (
+            len(recommendations) < top_k
+            and attempts < settings.MAX_RETRIES
+            and cursor < len(candidates)
+        ):
+            needed = top_k - len(recommendations)
+
+            batch = candidates[cursor:cursor + needed]
+
+            cursor += len(batch)
+            attempts += 1
+
+            decisions = self.product_validator.validate(
+                occasion,
+                [product for product, _ in batch]
+            )
+
+            for product, score in batch:
+
+                if decisions.get(product.id) is not True:
+                    rejected_ids.append(product.id)
+                    continue
+
+                recommendations.append({
+                    "product_id": product.id,
+                    "name": product.name,
+                    "price": product.price,
+                    "mainImage": product.mainImage,
+                    "similarity_score": round(score, 4)
+                })
+
+        return {
+            "occasion": occasion,
+            "generated_context": context,
+            "total_recommendations": len(recommendations),
+            "validation_attempts": attempts,
+            "rejected_product_ids": rejected_ids,
+            "recommendations": recommendations
+        }

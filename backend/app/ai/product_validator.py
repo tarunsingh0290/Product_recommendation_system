@@ -1,26 +1,104 @@
-from dataclasses import asdict, is_dataclass
-from typing import Literal
-from pydantic import Field, create_model
-from app.schemas.llm import Suitability, ValidationBatch
-from app.core.exceptions import ServiceError
 
-def validate_products(client, context, products):
-    candidate_ids = tuple(product.id for product in products)
-    assessment_schema = create_model('CandidateAssessment', __base__=Suitability,
-        candidate_id=(Literal[candidate_ids], ...))
-    batch_schema = create_model('CandidateBatch', __base__=ValidationBatch,
-        evaluations=(list[assessment_schema], Field(min_length=len(products), max_length=len(products))))
-    result = client.generate(batch_schema,
-        'Assess every supplied product for the exact gift occasion. Reject irrelevant products, '
-        'products specific to incompatible occasions, and products with insufficient evidence. '
-        'Return exactly one evaluation for EACH candidate, in the submitted order, including unsuitable '
-        'candidates. Copy each candidate_id exactly. Never omit or repeat candidates. '
-        'Score suitability from 0 to 1. Give one short sentence per reason, '
-        'at most 140 characters, using catalog facts.',
-        {'context': asdict(context) if is_dataclass(context) else context.model_dump(),
-         'products': [dict(candidate_id=p.id, name=p.name, brand=p.brand,
-            description=(p.short_description or p.description)[:350]) for p in products]})
-    ids = [item.candidate_id for item in result.evaluations]
-    if len(ids) != len(set(ids)) or set(ids) != {p.id for p in products}:
-        raise ServiceError('Provider returned missing, duplicate, or unknown product IDs.', 502)
-    return result.evaluations
+import json
+
+from app.ai.groq_client import GroqClient
+
+
+SYSTEM_PROMPT = """
+You are a gift recommendation product validator.
+
+Evaluate whether each product is suitable as a gift
+for the specified occasion.
+
+Rules:
+1. Evaluate each product using its name and description.
+2. Approve relevant gift products.
+3. Reject unrelated or inappropriate products.
+4. Do not invent product IDs.
+5. Return one decision for every supplied product.
+6. Return ONLY valid JSON in this format:
+
+{
+    "results": [
+        {
+            "product_id": "original_id",
+            "approved": true
+        }
+    ]
+}
+"""
+
+
+class ProductValidator:
+
+    def __init__(self, client=None):
+        self.client = client if client is not None else GroqClient()
+
+    def validate(self, occasion: str, products: list) -> dict:
+        if not products:
+            return {}
+
+        payload = {
+            "occasion": occasion,
+            "products": [
+                {
+                    "product_id": product.id,
+                    "name": product.name,
+                    "description": (
+                        product.shortDescription
+                        or product.description
+                        or ""
+                    )[:500]
+                }
+                for product in products
+            ]
+        }
+
+        response = self.client.generate(
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=json.dumps(payload, ensure_ascii=False)
+        )
+
+        # Parse Groq JSON response
+        try:
+            data = json.loads(response)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                "Groq returned invalid JSON"
+            ) from error
+
+        if not isinstance(data, dict):
+            raise ValueError("Expected a JSON object")
+
+        results = data.get("results")
+
+        if not isinstance(results, list):
+            raise ValueError("Missing results list")
+
+        expected_ids = {product.id for product in products}
+        decisions = {}
+
+        for item in results:
+            if not isinstance(item, dict):
+                raise ValueError("Invalid result item")
+
+            product_id = item.get("product_id")
+            approved = item.get("approved")
+
+            if (
+                product_id not in expected_ids
+                or product_id in decisions
+                or type(approved) is not bool
+            ):
+                raise ValueError(
+                    "Invalid product validation decision"
+                )
+
+            decisions[product_id] = approved
+
+        if set(decisions) != expected_ids:
+            raise ValueError(
+                "Missing product validation decisions"
+            )
+
+        return decisions
