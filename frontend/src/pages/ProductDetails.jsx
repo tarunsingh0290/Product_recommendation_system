@@ -19,7 +19,13 @@ export default function ProductDetails() {
     const controller = new AbortController();
     setLoading(true); setError(""); setImageFailed(false);
     getProduct(productId, { signal: controller.signal })
-      .then(full => { if (!controller.signal.aborted) setProduct(prev => ({ ...prev, ...full })); })
+      .then(full => { if (!controller.signal.aborted) setProduct(prev => {
+        const merged = { ...prev, ...full };
+        for (const key of ["brand", "originalPrice", "discountedPrice", "discountPercentage", "discountAmount", "description", "shortDescription", "mainImage"]) {
+          if (merged[key] == null || merged[key] === "") merged[key] = prev?.[key];
+        }
+        return merged;
+      }); })
       .catch(err => { if (!controller.signal.aborted && err.name !== "AbortError") setError(err.message); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();

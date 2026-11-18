@@ -19,6 +19,10 @@ class RecommendedProduct(BaseModel):
     product_id: str
     name: str
     price: str
+    originalPrice: str | None = None
+    discountedPrice: str | None = None
+    discountPercentage: str | None = None
+    discountAmount: str | None = None
     mainImage: str | None = None
     similarity_score: float
 

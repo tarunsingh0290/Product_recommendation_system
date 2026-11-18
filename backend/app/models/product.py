@@ -13,6 +13,10 @@ class Product(BaseModel):
     mainImage: str | None = None
 
     price: str
+    originalPrice: str | None = None
+    discountedPrice: str | None = None
+    discountPercentage: str | None = None
+    discountAmount: str | None = None
     stock: int = Field(ge=0)
 
     isApproved: bool

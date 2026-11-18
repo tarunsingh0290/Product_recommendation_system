@@ -21,6 +21,7 @@ class FakeRecommendationService:
                     "product_id": "p1",
                     "name": "Decorative Diyas",
                     "price": "499",
+                    "discountPercentage": "10",
                     "mainImage": None,
                     "similarity_score": 0.85
                 }
@@ -50,6 +51,7 @@ def test_recommendation_endpoint():
         assert data["occasion"] == "Diwali"
         assert data["total_recommendations"] == 1
         assert data["recommendations"][0]["product_id"] == "p1"
+        assert data["recommendations"][0]["discountPercentage"] == "10"
 
     finally:
         app.dependency_overrides.clear()

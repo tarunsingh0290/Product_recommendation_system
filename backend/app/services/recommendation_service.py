@@ -119,10 +119,22 @@ class RecommendationService:
                 recommendations.append({
                     "product_id": product.id,
                     "name": product.name,
+                    "brand": getattr(product, "brand", None),
+                    "shortDescription": getattr(
+                        product, "shortDescription", None
+                    ),
+                    "description": getattr(
+                        product, "description", None
+                    ),
                     "price": product.price,
+                    "originalPrice": getattr(product, "originalPrice", None),
+                    "discountedPrice": getattr(product, "discountedPrice", None),
+                    "discountPercentage": getattr(product, "discountPercentage", None),
+                    "discountAmount": getattr(product, "discountAmount", None),
                     "mainImage": product.mainImage,
                     "similarity_score": round(score, 4)
                 })
+
 
         return {
             "occasion": occasion,

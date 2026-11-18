@@ -60,3 +60,18 @@
 .details-warning{color:#a55b40;font-size:13px}
 @media(max-width:900px){.details-grid{grid-template-columns:1fr;gap:20px}.details-visual{height:400px}}
 @media(max-width:670px){.product-details-page{padding-top:16px}.details-visual{height:300px}.details-specs{grid-template-columns:1fr 1fr}.details-price-row strong{font-size:26px}.details-information h1{font-size:40px}.product-info{min-height:160px}}
+
+/* Consistent product links and grid sizing (all pages) */
+.product-grid,.recommendation-grid{align-items:stretch}
+.product-grid>.product-card,.recommendation-grid>.product-card{min-width:0;width:100%;height:100%}
+.product-card-link{display:flex;flex-direction:column;min-height:100%;height:100%;text-decoration:none;color:inherit}
+.product-card-link>.product-media{flex-shrink:0}
+.product-card-link>.product-info{display:flex;flex-direction:column;flex:1;min-width:0;padding:13px}
+.product-info .price-stack{margin-top:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline}
+.product-info h3{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.4;min-height:2.8em}
+.product-info p{margin-bottom:12px}
+.product-info .view-details{display:inline-flex;justify-content:flex-end;margin-top:11px}
+.product-media img{mix-blend-mode:normal;object-fit:contain}
+.discount-pill{z-index:1}
+@media(min-width:1281px){.recommendation-grid{grid-template-columns:repeat(5,minmax(0,1fr))}}
+@media(max-width:670px){.product-info .discounted-price{font-size:15px}}
